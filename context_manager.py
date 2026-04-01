@@ -73,6 +73,48 @@ async def rotate_session(chat_id: int) -> db.Session:
     return new_session
 
 
+def _proxy_spawn_commands() -> list[str]:
+    """Spawn commands when proxy is configured."""
+    return [
+        "**Senior Dev (Sonnet) — via proxy:**",
+        "```",
+        f'ANTHROPIC_BASE_URL="{config.PROXY_BASE_URL}" \\',
+        f'ANTHROPIC_API_KEY="{config.PROXY_API_KEY}" \\',
+        "claude --dangerously-skip-permissions \\",
+        '  -p "$(cat /tmp/agent-prompt.txt)" \\',
+        f"  --model {config.PROXY_MODEL}",
+        "```",
+        "",
+        "**Intern (Haiku) — via proxy:**",
+        "```",
+        f'ANTHROPIC_BASE_URL="{config.PROXY_BASE_URL}" \\',
+        f'ANTHROPIC_API_KEY="{config.PROXY_API_KEY}" \\',
+        "claude --dangerously-skip-permissions \\",
+        '  -p "$(cat /tmp/agent-prompt.txt)" \\',
+        "  --model claude-haiku-4-5-20251001",
+        "```",
+    ]
+
+
+def _direct_spawn_commands() -> list[str]:
+    """Spawn commands when no proxy — use direct CLI."""
+    return [
+        "**Senior Dev (Sonnet) — direct:**",
+        "```",
+        "claude --dangerously-skip-permissions \\",
+        '  -p "$(cat /tmp/agent-prompt.txt)" \\',
+        "  --model sonnet",
+        "```",
+        "",
+        "**Intern (Haiku) — direct:**",
+        "```",
+        "claude --dangerously-skip-permissions \\",
+        '  -p "$(cat /tmp/agent-prompt.txt)" \\',
+        "  --model haiku",
+        "```",
+    ]
+
+
 def build_system_prompt(session: db.Session, summary: str | None = None) -> str:
     """Build system prompt for a new/rotated session."""
     parts = [
@@ -134,23 +176,7 @@ def build_system_prompt(session: db.Session, summary: str | None = None) -> str:
         "",
         "### Step 2: Spawn via Bash",
         "",
-        "**Senior Dev (Sonnet):**",
-        "```",
-        f'ANTHROPIC_BASE_URL="{config.PROXY_BASE_URL}" \\',
-        f'ANTHROPIC_API_KEY="{config.PROXY_API_KEY}" \\',
-        "claude --dangerously-skip-permissions \\",
-        '  -p "$(cat /tmp/agent-prompt.txt)" \\',
-        f"  --model {config.PROXY_MODEL}",
-        "```",
-        "",
-        "**Intern (Haiku):**",
-        "```",
-        f'ANTHROPIC_BASE_URL="{config.PROXY_BASE_URL}" \\',
-        f'ANTHROPIC_API_KEY="{config.PROXY_API_KEY}" \\',
-        "claude --dangerously-skip-permissions \\",
-        '  -p "$(cat /tmp/agent-prompt.txt)" \\',
-        "  --model claude-haiku-4-5-20251001",
-        "```",
+        *(_proxy_spawn_commands() if config.PROXY_API_KEY else _direct_spawn_commands()),
         "",
         "IMPORTANT: Always copy commands EXACTLY. Never omit --model flag.",
         "",
