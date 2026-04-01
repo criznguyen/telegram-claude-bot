@@ -7,7 +7,7 @@ A Telegram bot that bridges to [Claude CLI](https://docs.anthropic.com/en/docs/c
 - **Multi-model routing** — Haiku classifies intent, Opus handles complex tasks (tech lead), Sonnet does heavy coding via proxy
 - **Streaming responses** — See Claude's thinking, tool usage, and text output in real-time
 - **Session management** — Persistent sessions with auto-recovery when CLI sessions expire
-- **Neural-memory integration** — Saves and recalls knowledge across sessions via [neural-memory MCP](https://github.com/criznguyen/neural-memory)
+- **Neural-memory integration** — Saves and recalls knowledge across sessions via [neural-memory MCP](https://github.com/nhadaututtheky/neural-memory)
 - **Auto-approve** — Automatically answers yes/no confirmation prompts from Claude
 - **Typing indicator** — Shows "typing..." while Claude is processing
 - **Cost tracking** — Per-session and total cost monitoring
