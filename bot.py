@@ -577,8 +577,10 @@ async def _process_message_inner(
                 combined = "\n\n---\n\n".join(all_responses)
                 await send_response(update, status_msg, combined)
                 reply_markup = InlineKeyboardMarkup(keyboard)
+                question = detected.question_text or "Choose an option:"
+                # Telegram limits caption to 4096 chars
                 await update.message.reply_text(
-                    "Choose an option:",
+                    question[:4096],
                     reply_markup=reply_markup,
                 )
                 return  # Exit loop, wait for callback
