@@ -94,6 +94,7 @@ async def _run_batch(cmd: list[str], cwd: str, timeout: int) -> ClaudeResponse:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            limit=10 * 1024 * 1024,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
@@ -135,12 +136,17 @@ async def _run_streaming(
     on_stream: StreamCallback,
 ) -> ClaudeResponse:
     """Streaming mode — parse stream-json lines and call on_stream callback."""
+    # Use 10MB line limit — Claude CLI can emit very large JSON lines
+    # (tool results, file contents, etc.) that exceed asyncio's 64KB default.
+    _LINE_LIMIT = 10 * 1024 * 1024
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            limit=_LINE_LIMIT,
         )
     except Exception as e:
         logger.exception("Claude CLI subprocess error")
