@@ -23,6 +23,7 @@ class ClaudeResponse:
     cost_usd: float = 0.0
     duration_ms: int = 0
     is_error: bool = False
+    modified_files: list[str] = field(default_factory=list)
 
 
 def _build_cmd(
@@ -155,6 +156,8 @@ async def _run_streaming(
     result_data: dict | None = None
     last_thinking = ""
     last_text = ""
+    modified_files: list[str] = []
+    _FILE_TOOLS = {"Write", "Edit", "NotebookEdit", "MultiEdit"}
 
     try:
         async def read_stream():
@@ -178,7 +181,6 @@ async def _run_streaming(
                         if block_type == "thinking":
                             thinking = block.get("thinking", "")
                             if thinking and thinking != last_thinking:
-                                # Send only the new part
                                 new_part = thinking[len(last_thinking):]
                                 if new_part:
                                     await on_stream("thinking", new_part)
@@ -193,6 +195,12 @@ async def _run_streaming(
                         elif block_type == "tool_use":
                             tool_name = block.get("name", "unknown")
                             await on_stream("tool", tool_name)
+                            # Track files created/modified by Claude
+                            if tool_name in _FILE_TOOLS:
+                                inp = block.get("input", {})
+                                fp = inp.get("file_path", "")
+                                if fp and fp not in modified_files:
+                                    modified_files.append(fp)
 
                 elif evt_type == "result":
                     result_data = event
@@ -220,10 +228,12 @@ async def _run_streaming(
         )
 
     if result_data:
-        return _parse_response(result_data)
+        resp = _parse_response(result_data)
+        resp.modified_files = modified_files
+        return resp
 
     # Fallback: use accumulated text
-    return ClaudeResponse(result=last_text or "Empty response from Claude.")
+    return ClaudeResponse(result=last_text or "Empty response from Claude.", modified_files=modified_files)
 
 
 def _parse_response(data: dict) -> ClaudeResponse:

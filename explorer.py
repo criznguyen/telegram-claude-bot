@@ -319,3 +319,17 @@ async def blame(project_path: str, args: list[str]) -> str:
 
     result = await _run(cmd, cwd=project_path)
     return f"👤 Blame: {file_path}\n\n{result}"
+
+
+# ---------------------------------------------------------------------------
+# /download <file> — returns absolute path or error string
+# ---------------------------------------------------------------------------
+
+def resolve_download(project_path: str, args: list[str]) -> str | None:
+    """Resolve a file path for download. Returns absolute path or None."""
+    if not args:
+        return None
+    target = _safe_path(project_path, args[0])
+    if not target or not os.path.isfile(target):
+        return None
+    return target

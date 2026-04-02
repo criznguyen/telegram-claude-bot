@@ -150,7 +150,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/branch [-a] - Branches\n"
         "/find <pattern> - Find files\n"
         "/grep <pattern> [path] - Search code\n"
-        "/blame <file> [start] [end] - Git blame\n\n"
+        "/blame <file> [start] [end] - Git blame\n"
+        "/download <file> - Download file\n\n"
         "🧠 Memory\n"
         "/history [n] - Recent messages\n"
         "/recall <query> - Search neural-memory\n"
@@ -411,6 +412,51 @@ async def cmd_blame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _explorer_cmd(update, context, explorer.blame)
 
 
+@auth_required
+async def cmd_download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Usage: /download <file_path>")
+        return
+    session = await get_or_create_session(update.effective_chat.id)
+    file_path = explorer.resolve_download(session.project_path, list(context.args))
+    if not file_path:
+        await update.message.reply_text("File not found.")
+        return
+    await _send_file(update, file_path, session.project_path)
+
+
+async def _send_file(update: Update, abs_path: str, project_path: str) -> None:
+    """Send a file as Telegram document."""
+    try:
+        file_size = os.path.getsize(abs_path)
+        # Telegram file upload limit: 50MB
+        if file_size > 50 * 1024 * 1024:
+            await update.message.reply_text(
+                f"File too large: {file_size / 1024 / 1024:.1f}MB (limit 50MB)"
+            )
+            return
+        rel = os.path.relpath(abs_path, project_path)
+        with open(abs_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=os.path.basename(abs_path),
+                caption=f"📄 {rel}",
+            )
+    except Exception as e:
+        logger.error("Failed to send file %s: %s", abs_path, e)
+
+
+async def _send_modified_files(
+    update: Update, files: list[str], project_path: str
+) -> None:
+    """Send files modified by Claude as Telegram documents."""
+    if not files:
+        return
+    for fp in files[:10]:  # Limit to 10 files max
+        if os.path.isfile(fp):
+            await _send_file(update, fp, project_path)
+
+
 # ---------------------------------------------------------------------------
 # File upload handler
 # ---------------------------------------------------------------------------
@@ -653,6 +699,8 @@ async def _process_message_inner(
                 cost_usd=response.cost_usd,
             )
             await send_response(update, status_msg, response.result)
+            if response.modified_files:
+                await _send_modified_files(update, response.modified_files, session.project_path)
             return
         # INTENT_OPUS or INTENT_CONTINUE → use session model (opus tech lead)
 
@@ -668,10 +716,12 @@ async def _process_message_inner(
 
         # --- Call Claude (Opus tech lead) + auto-approve loop ---
         all_responses: list[str] = []
+        all_modified_files: list[str] = []
         auto_approve_count = 0
 
         response = await _call_and_save(session, chat_id, text, system_prompt, status_msg)
         all_responses.append(response.result)
+        all_modified_files.extend(response.modified_files)
 
         while not response.is_error and auto_approve_count < config.MAX_AUTO_APPROVE_ROUNDS:
             detected = detect_question(response.result)
@@ -694,6 +744,7 @@ async def _process_message_inner(
                 session = await get_or_create_session(chat_id)
                 response = await _call_and_save(session, chat_id, "Yes, proceed.", status_msg=status_msg)
                 all_responses.append(response.result)
+                all_modified_files.extend(response.modified_files)
 
             elif detected.qtype == QuestionType.OPTIONS:
                 # Show options to user via inline keyboard, stop the loop
@@ -734,6 +785,10 @@ async def _process_message_inner(
     # Send final combined response
     combined = "\n\n---\n\n".join(all_responses)
     await send_response(update, status_msg, combined)
+
+    # Send modified files as downloadable documents
+    if all_modified_files:
+        await _send_modified_files(update, all_modified_files, session.project_path)
 
     # Check if we hit the auto-approve limit while Claude was still asking
     if auto_approve_count >= config.MAX_AUTO_APPROVE_ROUNDS:
@@ -863,6 +918,7 @@ async def post_init(app: Application) -> None:
         BotCommand("find", "Find files"),
         BotCommand("grep", "Search code"),
         BotCommand("blame", "Git blame"),
+        BotCommand("download", "Download file"),
     ])
 
 
@@ -901,6 +957,7 @@ def main() -> None:
     app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("grep", cmd_grep))
     app.add_handler(CommandHandler("blame", cmd_blame))
+    app.add_handler(CommandHandler("download", cmd_download))
 
     # Option selection callback
     app.add_handler(CallbackQueryHandler(handle_option_callback, pattern=r"^opt:"))
