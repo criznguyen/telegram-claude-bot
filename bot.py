@@ -22,6 +22,7 @@ import db
 import claude_bridge
 import context_manager
 import intent_router
+import file_reader
 from question_detector import detect_question, QuestionType
 
 logging.basicConfig(
@@ -87,17 +88,15 @@ def split_message(text: str, max_len: int = 4000) -> list[str]:
 
 
 async def send_response(update: Update, status_msg, text: str) -> None:
-    """Send response with chunking. Edit status_msg for first chunk, reply for rest."""
-    chunks = split_message(text)
+    """Send response as new message(s). Delete status_msg afterwards."""
+    # Delete the status/progress message
     try:
-        await status_msg.edit_text(chunks[0])
+        await status_msg.delete()
     except Exception:
-        try:
-            await status_msg.edit_text(chunks[0][:4096])
-        except Exception:
-            await update.message.reply_text(chunks[0][:4096])
+        pass
 
-    for chunk in chunks[1:]:
+    chunks = split_message(text)
+    for chunk in chunks:
         try:
             await update.message.reply_text(chunk)
         except Exception as e:
@@ -136,13 +135,16 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "/project <name> - Switch project directory\n"
         "/projects - List available projects\n"
+        "/newproject <name> - Create new project\n"
         "/model <name> - Switch model (sonnet/opus/haiku)\n"
         "/reset - New session (summarizes current)\n"
         "/history [n] - Recent messages\n"
         "/recall <query> - Search neural-memory\n"
         "/remember <text> - Save to neural-memory\n"
         "/cost - Show total cost\n"
-        "/status - Current session info\n"
+        "/status - Current session info\n\n"
+        "📁 File upload: Send .pdf .docx .xlsx .txt .md .py .json etc → saved to docs/ folder\n"
+        "Add caption to ask Claude questions about the file."
     )
 
 
@@ -178,6 +180,46 @@ async def cmd_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     session = await get_or_create_session(chat_id)
     await db.update_session_project(session.id, project_path)
     await update.message.reply_text(f"Switched to: {project_path}")
+
+
+@auth_required
+async def cmd_newproject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Usage: /newproject <name>")
+        return
+
+    name = context.args[0]
+    # Sanitize: only allow alphanumeric, hyphens, underscores, dots
+    if not all(c.isalnum() or c in "-_." for c in name):
+        await update.message.reply_text("Invalid name. Use only letters, numbers, hyphens, underscores, dots.")
+        return
+
+    project_path = os.path.join(config.PROJECTS_DIR, name)
+
+    if os.path.exists(project_path):
+        await update.message.reply_text(f"Already exists: {project_path}\nUse /project {name} to switch.")
+        return
+
+    try:
+        os.makedirs(project_path, exist_ok=True)
+        # Initialize git repo
+        proc = await asyncio.subprocess.create_subprocess_exec(
+            "git", "init", cwd=project_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+    except OSError as e:
+        await update.message.reply_text(f"Error creating project: {e}")
+        return
+
+    # Auto-switch session to new project
+    chat_id = update.effective_chat.id
+    session = await get_or_create_session(chat_id)
+    await db.update_session_project(session.id, project_path)
+    await update.message.reply_text(
+        f"Created & switched to: {project_path}\n"
+        f"Git initialized."
+    )
 
 
 @auth_required
@@ -312,6 +354,70 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ---------------------------------------------------------------------------
+# File upload handler
+# ---------------------------------------------------------------------------
+
+@auth_required
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle file uploads: save to docs/ and send content to Claude."""
+    chat_id = update.effective_chat.id
+    doc = update.message.document
+    caption = update.message.caption or ""
+
+    if not doc.file_name:
+        await update.message.reply_text("File has no name.")
+        return
+
+    status_msg = await update.message.reply_text(f"📥 Downloading {doc.file_name}...")
+
+    try:
+        # Download file
+        tg_file = await doc.get_file()
+        import io as io_module
+        buf = io_module.BytesIO()
+        await tg_file.download_to_memory(buf)
+        buf.seek(0)
+        file_data = buf.read()
+
+        # Get active session
+        session = await get_or_create_session(chat_id)
+
+        # Create docs folder if needed
+        docs_dir = os.path.join(session.project_path, "docs")
+        os.makedirs(docs_dir, exist_ok=True)
+
+        # Save file to docs/
+        file_path = os.path.join(docs_dir, doc.file_name)
+        with open(file_path, "wb") as f:
+            f.write(file_data)
+
+        # Extract content
+        content, extraction_msg = file_reader.extract_content(doc.file_name, file_data)
+
+        if not content:
+            await status_msg.edit_text(f"❌ {extraction_msg}")
+            return
+
+        # Build prompt
+        prompt_parts = [f"<file name=\"{doc.file_name}\">"]
+        prompt_parts.append(content)
+        prompt_parts.append("</file>")
+        prompt_parts.append(f"\n📁 Saved to: docs/{doc.file_name}")
+        if caption:
+            prompt_parts.append(f"\n\nUser request: {caption}")
+
+        prompt = "\n".join(prompt_parts)
+
+        # Update status and process
+        await status_msg.edit_text(f"💬 Processing {doc.file_name}... ({extraction_msg})")
+        await _process_message(update, chat_id, prompt, status_msg)
+
+    except Exception as e:
+        logger.exception("Document handler error")
+        await status_msg.edit_text(f"❌ Error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Pending option selections: chat_id -> {session, question_text}
 # ---------------------------------------------------------------------------
 pending_options: dict[int, dict] = {}
@@ -388,63 +494,41 @@ async def _call_and_save(
     return response
 
 
-# Minimum interval between Telegram message edits (Telegram rate limit)
-_STREAM_EDIT_INTERVAL = 1.5  # seconds
+# Minimum interval between Telegram status edits (avoid 400 errors)
+_STATUS_EDIT_INTERVAL = 3.0  # seconds
 
 
 def _make_stream_callback(status_msg):
-    """Create a streaming callback that periodically updates the Telegram message."""
+    """Create a streaming callback that only updates status with tool usage info."""
     state = {
-        "thinking": "",
-        "text": "",
         "tools": [],
         "last_edit": 0.0,
-        "dirty": False,
+        "last_sent_text": "",
     }
 
-    async def _flush():
-        """Edit the status message with current accumulated content."""
+    async def _flush_status():
+        """Update status message with tool activity (infrequent edits only)."""
         import time
         now = time.monotonic()
-        if now - state["last_edit"] < _STREAM_EDIT_INTERVAL:
+        if now - state["last_edit"] < _STATUS_EDIT_INTERVAL:
             return
-        if not state["dirty"]:
+        if not state["tools"]:
             return
 
-        parts = []
-        if state["thinking"]:
-            # Show last 300 chars of thinking to keep message short
-            think_preview = state["thinking"][-300:]
-            if len(state["thinking"]) > 300:
-                think_preview = "..." + think_preview
-            parts.append(f"💭 {think_preview}")
-        if state["tools"]:
-            parts.append(f"🔧 {', '.join(state['tools'][-5:])}")
-        if state["text"]:
-            parts.append(state["text"][-3500:])
-        else:
-            parts.append("⏳ thinking...")
-
-        display = "\n\n".join(parts)
+        display = "⏳ " + ", ".join(state["tools"][-5:]) + "..."
+        if display == state["last_sent_text"]:
+            return
         try:
             await status_msg.edit_text(display[:4096])
             state["last_edit"] = now
-            state["dirty"] = False
+            state["last_sent_text"] = display
         except Exception:
-            pass  # Telegram rate limit or message unchanged
+            pass
 
     async def callback(event_type: str, chunk: str):
-        if event_type == "thinking":
-            state["thinking"] += chunk
-            state["dirty"] = True
-        elif event_type == "text":
-            state["text"] += chunk
-            state["dirty"] = True
-        elif event_type == "tool":
+        if event_type == "tool":
             state["tools"].append(chunk)
-            state["dirty"] = True
-
-        await _flush()
+            await _flush_status()
 
     return callback
 
@@ -705,6 +789,7 @@ async def post_init(app: Application) -> None:
         BotCommand("help", "Show help"),
         BotCommand("projects", "List available projects"),
         BotCommand("project", "Switch project"),
+        BotCommand("newproject", "Create new project"),
         BotCommand("model", "Switch model (sonnet/opus/haiku)"),
         BotCommand("reset", "End session & start new"),
         BotCommand("history", "Show recent messages"),
@@ -732,6 +817,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("projects", cmd_projects))
     app.add_handler(CommandHandler("project", cmd_project))
+    app.add_handler(CommandHandler("newproject", cmd_newproject))
     app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("history", cmd_history))
@@ -742,6 +828,9 @@ def main() -> None:
 
     # Option selection callback
     app.add_handler(CallbackQueryHandler(handle_option_callback, pattern=r"^opt:"))
+
+    # Document/file handler (must be before text handler so it takes priority)
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     # Catch-all text handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

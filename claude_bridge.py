@@ -237,9 +237,16 @@ def _parse_response(data: dict) -> ClaudeResponse:
         input_tokens += usage.get("cache_creation_input_tokens", 0)
         input_tokens += usage.get("cache_read_input_tokens", 0)
 
-    is_error = data.get("type") == "result" and data.get("subtype") == "error"
+    is_error = data.get("is_error", False) or (
+        data.get("type") == "result"
+        and str(data.get("subtype", "")).startswith("error")
+    )
     if is_error and not result_text:
-        result_text = data.get("error", "Unknown error from Claude CLI")
+        errors = data.get("errors", [])
+        result_text = (
+            "; ".join(errors) if errors
+            else data.get("error", "Unknown error from Claude CLI")
+        )
 
     return ClaudeResponse(
         result=result_text or "Empty response.",
