@@ -5,7 +5,8 @@ A Telegram bot that bridges to [Claude CLI](https://docs.anthropic.com/en/docs/c
 ## Features
 
 - **Multi-model routing** — Haiku classifies intent, Opus handles complex tasks (tech lead), Sonnet does heavy coding via proxy
-- **Streaming responses** — See Claude's thinking, tool usage, and text output in real-time
+- **IDE-like explorer** — Browse files, search code, view diffs, blame, and logs directly from Telegram
+- **File upload** — Send PDF, DOCX, XLSX, code files → auto-saved to project docs/ and analyzed by Claude
 - **Session management** — Persistent sessions with auto-recovery when CLI sessions expire
 - **Neural-memory integration** — Saves and recalls knowledge across sessions via [neural-memory MCP](https://github.com/nhadaututtheky/neural-memory)
 - **Auto-approve** — Automatically answers yes/no confirmation prompts from Claude
@@ -129,19 +130,44 @@ sudo journalctl -u telegram-claude-bot -f
 
 ## Bot Commands
 
+### Session & Project
+
 | Command | Description |
 |---------|-------------|
 | `/start` | Start the bot |
-| `/help` | Show help |
+| `/help` | Show all commands |
 | `/projects` | List available projects |
-| `/project <path>` | Switch working directory |
+| `/project <name>` | Switch working directory |
+| `/newproject <name>` | Create new project (git init) |
 | `/model <name>` | Switch model (opus/sonnet/haiku) |
 | `/reset` | End current session & start new |
-| `/history` | Show recent messages |
+| `/status` | Current session info |
+| `/cost` | Show usage costs |
+
+### Explorer / IDE
+
+| Command | Description |
+|---------|-------------|
+| `/tree [path] [depth]` | Directory tree (default depth 3) |
+| `/view <file> [start] [end]` | View file with line numbers |
+| `/diff [file] [--staged]` | Git diff (stat + detail) |
+| `/log [n] [file]` | Git log (default 15, max 50) |
+| `/branch [-a]` | List branches |
+| `/find <pattern>` | Find files by name |
+| `/grep <pattern> [path]` | Search code contents |
+| `/blame <file> [start] [end]` | Git blame with line range |
+
+### Memory
+
+| Command | Description |
+|---------|-------------|
+| `/history [n]` | Show recent messages |
 | `/recall <query>` | Search neural-memory |
 | `/remember <text>` | Save to neural-memory |
-| `/cost` | Show usage costs |
-| `/status` | Current session info |
+
+### File Upload
+
+Send any file as a Telegram document — supported formats: PDF, DOCX, XLSX, Markdown, code files (.py, .go, .js, .ts, .json, etc.). Files are saved to the project's `docs/` folder. Add a caption to ask Claude about the file.
 
 ## Multi-Model Routing
 
@@ -169,16 +195,12 @@ The proxy route is optional. Without it, Opus handles everything directly. To en
 1. Set `PROXY_API_KEY` and `PROXY_MODEL` in `.env`
 2. The tech lead (Opus) will automatically delegate coding tasks to Sonnet via proxy
 
-## Streaming
+## Response Delivery
 
-The bot streams Claude's output to Telegram in real-time:
-
-- Thinking preview (last 300 chars)
-- Tool usage indicators
-- Text response as it's generated
-- Typing indicator while processing
-
-Messages are updated every ~1.5s (Telegram API rate limit).
+- **Typing indicator** while Claude is processing
+- **Tool activity status** shown during long operations (edit interval 3s)
+- **Final response** sent as new message(s) — avoids Telegram `editMessageText` 400 errors
+- Long responses auto-split at 4000 char boundaries
 
 ## Session Recovery
 
@@ -195,11 +217,13 @@ Sessions persist until you manually `/reset`.
 
 ```
 telegram-claude-bot/
-├── bot.py                  # Main bot logic, handlers, streaming
+├── bot.py                  # Main bot logic, command handlers
 ├── claude_bridge.py        # Claude CLI subprocess (batch + streaming)
 ├── config.py               # Environment config
 ├── context_manager.py      # System prompts, session recovery
 ├── db.py                   # SQLite session & message storage
+├── explorer.py             # IDE-like project browsing commands
+├── file_reader.py          # Extract text from PDF, DOCX, XLSX, code
 ├── intent_router.py        # Haiku intent classification
 ├── question_detector.py    # Detect yes/no and option questions
 ├── requirements.txt        # Python dependencies
