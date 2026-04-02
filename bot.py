@@ -23,6 +23,7 @@ import claude_bridge
 import context_manager
 import intent_router
 import file_reader
+import explorer
 from question_detector import detect_question, QuestionType
 
 logging.basicConfig(
@@ -133,18 +134,28 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @auth_required
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "/project <name> - Switch project directory\n"
-        "/projects - List available projects\n"
-        "/newproject <name> - Create new project\n"
-        "/model <name> - Switch model (sonnet/opus/haiku)\n"
-        "/reset - New session (summarizes current)\n"
+        "📋 Session\n"
+        "/project <name> - Switch project\n"
+        "/projects - List projects\n"
+        "/newproject <name> - Create project\n"
+        "/model <name> - Switch model\n"
+        "/reset - New session\n"
+        "/status - Session info\n"
+        "/cost - Usage costs\n\n"
+        "🔍 Explorer\n"
+        "/tree [path] [depth] - Directory tree\n"
+        "/view <file> [start] [end] - View file\n"
+        "/diff [file] [--staged] - Git diff\n"
+        "/log [n] [file] - Git log\n"
+        "/branch [-a] - Branches\n"
+        "/find <pattern> - Find files\n"
+        "/grep <pattern> [path] - Search code\n"
+        "/blame <file> [start] [end] - Git blame\n\n"
+        "🧠 Memory\n"
         "/history [n] - Recent messages\n"
         "/recall <query> - Search neural-memory\n"
-        "/remember <text> - Save to neural-memory\n"
-        "/cost - Show total cost\n"
-        "/status - Current session info\n\n"
-        "📁 File upload: Send .pdf .docx .xlsx .txt .md .py .json etc → saved to docs/ folder\n"
-        "Add caption to ask Claude questions about the file."
+        "/remember <text> - Save to memory\n\n"
+        "📁 File upload: Send files → saved to docs/"
     )
 
 
@@ -351,6 +362,53 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Created: {session.created_at}\n"
         f"Last used: {session.last_used_at}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Explorer / IDE commands
+# ---------------------------------------------------------------------------
+
+async def _explorer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                        func) -> None:
+    """Generic wrapper for explorer commands."""
+    chat_id = update.effective_chat.id
+    session = await get_or_create_session(chat_id)
+    result = await func(session.project_path, list(context.args or []))
+    for chunk in split_message(result):
+        await update.message.reply_text(chunk)
+
+
+@auth_required
+async def cmd_tree(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.tree)
+
+@auth_required
+async def cmd_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.view)
+
+@auth_required
+async def cmd_diff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.diff)
+
+@auth_required
+async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.log)
+
+@auth_required
+async def cmd_branch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.branch)
+
+@auth_required
+async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.find)
+
+@auth_required
+async def cmd_grep(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.grep)
+
+@auth_required
+async def cmd_blame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _explorer_cmd(update, context, explorer.blame)
 
 
 # ---------------------------------------------------------------------------
@@ -797,6 +855,14 @@ async def post_init(app: Application) -> None:
         BotCommand("remember", "Save to neural-memory"),
         BotCommand("cost", "Show usage costs"),
         BotCommand("status", "Current session info"),
+        BotCommand("tree", "Directory tree"),
+        BotCommand("view", "View file content"),
+        BotCommand("diff", "Git diff"),
+        BotCommand("log", "Git log"),
+        BotCommand("branch", "Git branches"),
+        BotCommand("find", "Find files"),
+        BotCommand("grep", "Search code"),
+        BotCommand("blame", "Git blame"),
     ])
 
 
@@ -825,6 +891,16 @@ def main() -> None:
     app.add_handler(CommandHandler("remember", cmd_remember))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("status", cmd_status))
+
+    # Explorer / IDE commands
+    app.add_handler(CommandHandler("tree", cmd_tree))
+    app.add_handler(CommandHandler("view", cmd_view))
+    app.add_handler(CommandHandler("diff", cmd_diff))
+    app.add_handler(CommandHandler("log", cmd_log))
+    app.add_handler(CommandHandler("branch", cmd_branch))
+    app.add_handler(CommandHandler("find", cmd_find))
+    app.add_handler(CommandHandler("grep", cmd_grep))
+    app.add_handler(CommandHandler("blame", cmd_blame))
 
     # Option selection callback
     app.add_handler(CallbackQueryHandler(handle_option_callback, pattern=r"^opt:"))
